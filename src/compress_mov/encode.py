@@ -8,9 +8,9 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Protocol
 
-from rich.progress import Progress, TaskID
+from rich.progress import TaskID
 
 from . import logs
 from .bins import FFMPEG, FFPROBE
@@ -30,6 +30,30 @@ class EncodeResult:
     discarded: bool = False
     # Set when an unexpected exception (not an ffmpeg exit code) failed the file.
     error: str | None = None
+
+
+class ConsoleLike(Protocol):
+    """The one console method the encoder uses, to surface warnings."""
+
+    def print(self, message: str, *, style: str | None = None) -> None: ...
+
+
+class ProgressLike(Protocol):
+    """The slice of ``rich.progress.Progress`` the encoder drives.
+
+    The CLI passes a real Rich ``Progress``; other front ends (the TUI) pass
+    a small adapter with the same four members, so the encoder never
+    imports a UI toolkit.
+    """
+
+    @property
+    def console(self) -> ConsoleLike: ...
+
+    def add_task(self, description: str, *, total: float | None = ...) -> TaskID: ...
+
+    def update(self, task_id: TaskID, *, completed: float | None = ..., description: str | None = ...) -> None: ...
+
+    def remove_task(self, task_id: TaskID) -> None: ...
 
 
 class _Current:
@@ -91,6 +115,15 @@ def _spawn(cmd: list[str], err_fh: IO[str], out_path: Path) -> subprocess.Popen[
         if pending is not None:
             handle_interrupt(pending, None)
     return proc
+
+
+def cancel_current() -> None:
+    """Kill the in-flight ffmpeg (if any) and remove its partial output.
+
+    For front ends that own the process lifecycle (the TUI) instead of the
+    CLI's signal handlers. The encode then returns as a failed result.
+    """
+    _abort_current()
 
 
 def _abort_current() -> None:
@@ -189,7 +222,7 @@ def _build_cmd(in_path: Path, out_path: Path, plan: StreamPlan) -> list[str]:
     ]  # fmt: skip
 
 
-def _report_plan(plan: StreamPlan, in_path: Path, progress: Progress, reported: set[str]) -> None:
+def _report_plan(plan: StreamPlan, in_path: Path, progress: ProgressLike, reported: set[str]) -> None:
     """Log/print the plan's losses, skipping any already reported for this file."""
     for warning in plan.warnings:
         if warning not in reported:
@@ -213,7 +246,7 @@ def _run_ffmpeg(
     cmd: list[str],
     out_path: Path,
     err_file: Path,
-    progress: Progress,
+    progress: ProgressLike,
     task_id: TaskID,
     task_total: int | None,
     label: str,
@@ -250,7 +283,7 @@ def _run_ffmpeg(
 
 
 def encode_one(
-    index: int, total: int, in_path: Path, work_dir: Path, progress: Progress, keep_larger: bool = False
+    index: int, total: int, in_path: Path, work_dir: Path, progress: ProgressLike, keep_larger: bool = False
 ) -> EncodeResult:
     """Encode one file to HEVC .mp4 next to the original, updating `progress`.
 
@@ -273,7 +306,7 @@ def encode_one(
 
 
 def _encode_one(
-    index: int, total: int, in_path: Path, work_dir: Path, progress: Progress, keep_larger: bool
+    index: int, total: int, in_path: Path, work_dir: Path, progress: ProgressLike, keep_larger: bool
 ) -> EncodeResult:
     duration = probe_duration(in_path)
     in_bytes = in_path.stat().st_size

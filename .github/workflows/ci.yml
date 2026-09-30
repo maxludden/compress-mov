@@ -31,3 +31,23 @@ jobs:
       - run: uv sync --locked
       # The suite mocks ffmpeg/ffprobe, so it needs neither installed.
       - run: uv run pytest
+
+  # The TUI is an optional extra: a plain install must work without Textual.
+  base-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build --wheel
+      - name: Install the wheel without extras
+        run: |
+          uv venv "$RUNNER_TEMP/base"
+          uv pip install --python "$RUNNER_TEMP/base/bin/python" dist/*.whl
+          "$RUNNER_TEMP/base/bin/compress-mov" --help
+          if "$RUNNER_TEMP/base/bin/python" -c "import textual" 2>/dev/null; then
+            echo "textual must not be installed without the tui extra"; exit 1
+          fi
+          "$RUNNER_TEMP/base/bin/compress-mov-tui" --help
+          if "$RUNNER_TEMP/base/bin/compress-mov-tui"; then
+            echo "compress-mov-tui should exit non-zero without the tui extra"; exit 1
+          fi

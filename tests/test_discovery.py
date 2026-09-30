@@ -180,3 +180,26 @@ def test_unreadable_directory_is_skipped_not_fatal(tmp_path: Path, monkeypatch) 
     videos = resolve_inputs([locked, good], recursive=False)
 
     assert [p.name for p in videos] == ["a.mov"]
+
+
+def test_scan_notes_go_to_the_given_sink_not_the_console(tmp_path: Path, capsys) -> None:
+    (tmp_path / "a.mov").touch()
+    notes: list[str] = []
+
+    videos = resolve_inputs([tmp_path, tmp_path / "ghost.mov"], recursive=False, say=notes.append)
+
+    assert [p.name for p in videos] == ["a.mov"]
+    assert any("Scanning 2 input(s)" in n for n in notes)
+    assert any("skipping (not found)" in n for n in notes)
+    assert capsys.readouterr().err == ""
+
+
+def test_unreadable_directory_note_uses_the_sink(tmp_path: Path, monkeypatch) -> None:
+    def boom(self: Path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "iterdir", boom)
+    notes: list[str] = []
+
+    assert find_mov_files(tmp_path, recursive=False, say=notes.append) == []
+    assert notes and "can't read" in notes[0]
