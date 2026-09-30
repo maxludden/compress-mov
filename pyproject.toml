@@ -1,0 +1,26 @@
+[project]
+name = "compress-mov"
+version = "0.1.0"
+description = "Batch-compress .mov files to HEVC .mp4 via ffmpeg, with a Finder Quick Action front end"
+readme = "README.md"
+authors = [
+    { name = "Maxwell Ludden", email = "maxludden@me.com" }
+]
+requires-python = ">=3.11"
+keywords = ["ffmpeg", "hevc", "video-compression", "finder-quick-action", "macos"]
+dependencies = [
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+compress-mov = "compress_mov.cli:run"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
