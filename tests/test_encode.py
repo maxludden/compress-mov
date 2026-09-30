@@ -531,3 +531,20 @@ def test_spawn_failure_resets_starting_flag(clean_current, tmp_path: Path, monke
         encode_module._spawn(["ffmpeg"], None, tmp_path / "out.mp4")
 
     assert clean_current.starting is False
+
+
+# --- ffmpeg option order -----------------------------------------------------
+
+
+def test_generic_video_codec_precedes_per_stream_overrides(tmp_path: Path) -> None:
+    """Regression: ffmpeg applies the LAST matching codec option, so a generic
+    `-c:v libx265` after `-c:v:N copy` would re-encode cover art as HEVC."""
+    cover = {"index": 1, "codec_type": "video", "codec_name": "png", "disposition": {"attached_pic": 1}}
+    plan = encode_module.plan_streams([{"index": 0, "codec_type": "video", "pix_fmt": "yuv420p"}, cover])
+
+    cmd = encode_module._build_cmd(tmp_path / "in.mov", tmp_path / "out.mp4", plan)
+
+    assert "-c:v:1" in cmd and cmd[cmd.index("-c:v:1") + 1] == "copy"
+    assert cmd.index("-c:v") < cmd.index("-c:v:1")
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert cmd[-1] == str(tmp_path / "out.mp4")

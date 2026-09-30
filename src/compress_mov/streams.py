@@ -62,9 +62,8 @@ def probe_streams(path: Path) -> list[dict[str, Any]]:
     try:
         # List-form argv, no shell, and the path follows -i so it can never be
         # read as an option: nothing here is interpretable as a command.
-        out = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
-        ).stdout  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
         streams = json.loads(out).get("streams", [])
     except (OSError, ValueError, AttributeError):
         return []

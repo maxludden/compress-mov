@@ -174,11 +174,15 @@ def probe_duration(path: Path) -> float:
 
 
 def _build_cmd(in_path: Path, out_path: Path, plan: StreamPlan) -> list[str]:
+    # The generic -c:v must come BEFORE the plan's arguments: when several
+    # codec options match a stream, ffmpeg applies the last one, so a generic
+    # `-c:v libx265` placed after a per-stream `-c:v:N copy` (cover art)
+    # would override it and try to encode the picture as HEVC.
     return [
         FFMPEG, "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(in_path),
-        *plan.args,
         "-c:v", "libx265", "-preset", "slow", "-crf", "28", "-x265-params", "log-level=error",
+        *plan.args,
         "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats",
         str(out_path),
