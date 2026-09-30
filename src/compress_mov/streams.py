@@ -147,6 +147,13 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
         # ffprobe couldn't describe the file, so only the first video stream
         # and the audio can be mapped blind. Say so instead of silently
         # narrowing the "every stream" behaviour.
+        #
+        # Don't widen this to ``-map 0:v``: without probe data cover art
+        # (attached_pic) can't be told from real video, and encoding it as
+        # HEVC fails the whole file ("Could not find tag for codec hevc in
+        # stream #N, codec not currently supported in container"). Excluding
+        # it by disposition (``-map -0:disp:attached_pic``) isn't portable
+        # either: ffmpeg 6.1 rejects that specifier.
         return StreamPlan(
             args=[
                 "-map",
