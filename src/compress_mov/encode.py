@@ -104,19 +104,26 @@ def _abort_current() -> None:
         out_path.unlink(missing_ok=True)
 
 
-def unique_output_path(in_path: Path) -> Path:
-    """``<stem> (HEVC).mp4`` next to the input, or the first free ``... (HEVC) N.mp4``.
+def reserve_output_path(in_path: Path) -> Path:
+    """Atomically claim ``<stem> (HEVC).mp4`` next to the input, or the first free ``... (HEVC) N.mp4``.
 
-    A counter (not a timestamp) so any number of collisions get distinct
-    names; the encode also runs with ``-n`` so a file that appears after
-    this check is never overwritten.
+    The file is created here with ``O_EXCL``, so the name is ours even if
+    another process is picking outputs at the same moment, and every later
+    cleanup (failure, discard, interrupt) only ever deletes a file this run
+    created. ffmpeg then overwrites the empty placeholder (``-y``). A counter,
+    not a timestamp, so any number of collisions get distinct names.
     """
-    candidate = in_path.with_name(f"{in_path.stem} (HEVC).mp4")
-    n = 2
-    while candidate.exists():
-        candidate = in_path.with_name(f"{in_path.stem} (HEVC) {n}.mp4")
-        n += 1
-    return candidate
+    n = 1
+    while True:
+        name = f"{in_path.stem} (HEVC).mp4" if n == 1 else f"{in_path.stem} (HEVC) {n}.mp4"
+        candidate = in_path.with_name(name)
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            n += 1
+            continue
+        os.close(fd)
+        return candidate
 
 
 def _copy_times(src: Path, dst: Path) -> None:
@@ -146,7 +153,7 @@ def probe_duration(path: Path) -> float:
         except ValueError:
             return 0.0
 
-    d = _run([FFPROBE, "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", str(path)])
+    d = _run([FFPROBE, "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", "-i", str(path)])
     if d <= 0:
         d = _run(
             [
@@ -159,6 +166,7 @@ def probe_duration(path: Path) -> float:
                 "stream=duration",
                 "-of",
                 "default=nk=1:nw=1",
+                "-i",
                 str(path),
             ]
         )
@@ -167,7 +175,7 @@ def probe_duration(path: Path) -> float:
 
 def _build_cmd(in_path: Path, out_path: Path, plan: StreamPlan) -> list[str]:
     return [
-        FFMPEG, "-hide_banner", "-loglevel", "warning", "-n",
+        FFMPEG, "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(in_path),
         *plan.args,
         "-c:v", "libx265", "-preset", "slow", "-crf", "28", "-x265-params", "log-level=error",
@@ -263,10 +271,12 @@ def encode_one(
 def _encode_one(
     index: int, total: int, in_path: Path, work_dir: Path, progress: Progress, keep_larger: bool
 ) -> EncodeResult:
-    out_path = unique_output_path(in_path)
-
     duration = probe_duration(in_path)
     in_bytes = in_path.stat().st_size
+    out_path = reserve_output_path(in_path)
+    # Registered immediately so any exit path (error, signal) removes the
+    # placeholder we just created, and only that.
+    _CURRENT.out_path = out_path
     label = f"[{index}/{total}] {in_path.name}"
 
     logs.log(f'START in="{in_path}" out="{out_path}" size="{human(in_bytes)}" duration="{duration}s"')
@@ -289,7 +299,7 @@ def _encode_one(
             # failing the whole file over a cover image or metadata track.
             logs.log(f'RETRY in="{in_path}" rc={rc} without: {", ".join(plan.extras)}')
             _log_ffmpeg_stderr(err_file)
-            out_path.unlink(missing_ok=True)
+            # No unlink: the reserved file is ours and the retry's -y overwrites it.
             plan = plan_streams(streams, keep_extras=False)
             _report_plan(plan, in_path, progress, reported)
             rc = _run_ffmpeg(

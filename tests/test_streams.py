@@ -86,7 +86,22 @@ def test_unknown_colour_tags_are_not_passed() -> None:
     assert not any(a.startswith("-color") for a in plan.args)
 
 
-@pytest.mark.parametrize("pix_fmt", ["yuva444p10le", "yuva422p", "rgba", "argb", "gbrap12le"])
+@pytest.mark.parametrize(
+    "pix_fmt",
+    [
+        "yuva444p10le",
+        "yuva422p",
+        "rgba",
+        "argb",
+        "gbrap12le",
+        "ayuv64le",
+        "ayuv64be",
+        "vuya",
+        "ya8",
+        "ya16le",
+        "rgba64le",
+    ],
+)
 def test_alpha_is_detected_and_warned(pix_fmt: str) -> None:
     assert has_alpha({"pix_fmt": pix_fmt})
     plan = plan_streams([video(pix_fmt=pix_fmt)])
@@ -97,6 +112,7 @@ def test_alpha_is_detected_and_warned(pix_fmt: str) -> None:
 def test_opaque_formats_are_not_alpha() -> None:
     assert not has_alpha({"pix_fmt": "yuv420p10le"})
     assert not has_alpha({"pix_fmt": "p010le"})
+    assert not has_alpha({"pix_fmt": "vuyx"})
 
 
 # --- stream retention (item 6) ---------------------------------------------
@@ -200,7 +216,9 @@ def test_unprobeable_input_falls_back_to_conservative_defaults() -> None:
 
     assert plan.args[:4] == ["-map", "0:v:0", "-map", "0:a?"]
     assert ("-tag:v", "hvc1") in pairs(plan.args)
-    assert plan.warnings == [] and plan.extras == []
+    assert plan.extras == []
+    # The narrowing is announced, not silent.
+    assert any("first video stream" in w and "ffprobe" in w for w in plan.warnings)
 
 
 # --- probe_streams ----------------------------------------------------------
@@ -209,6 +227,15 @@ def test_unprobeable_input_falls_back_to_conservative_defaults() -> None:
 class _Completed:
     def __init__(self, stdout: str) -> None:
         self.stdout = stdout
+
+
+def test_probe_streams_puts_the_path_after_dash_i(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(streams_module.subprocess, "run", lambda cmd, **k: calls.append(cmd) or _Completed("{}"))
+
+    probe_streams(Path("-evil.mov"))
+
+    assert calls[0][-2:] == ["-i", "-evil.mov"]
 
 
 def test_probe_streams_parses_ffprobe_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

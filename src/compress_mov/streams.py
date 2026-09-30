@@ -25,7 +25,7 @@ HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
 TEXT_SUBTITLE_CODECS = {"mov_text", "subrip", "srt", "ass", "ssa", "webvtt", "text"}
 
 _UNKNOWN = {"", "unknown", "unspecified", "reserved", "n/a"}
-_ALPHA_PIX_FMT = re.compile(r"^(yuva|ya\d|argb|abgr|rgba|bgra|gbra)")
+_ALPHA_PIX_FMT = re.compile(r"^(yuva|ya\d|ayuv|vuya|argb|abgr|rgba|bgra|gbra)")
 _DEEP_PIX_FMT = re.compile(r"(?:p|^)0?(?:9|10|12|14|16)(?:le|be)$")
 
 MIN_AUDIO_KBPS = 128
@@ -57,10 +57,14 @@ def probe_streams(path: Path) -> list[dict[str, Any]]:
         FFPROBE, "-v", "error", "-show_entries",
         "stream=index,codec_type,codec_name,codec_tag_string,pix_fmt,bits_per_raw_sample,channels,"
         "color_range,color_space,color_transfer,color_primaries:stream_disposition=attached_pic",
-        "-of", "json", str(path),
+        "-of", "json", "-i", str(path),
     ]  # fmt: skip
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+        # List-form argv, no shell, and the path follows -i so it can never be
+        # read as an option: nothing here is interpretable as a command.
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, check=False
+        ).stdout  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         streams = json.loads(out).get("streams", [])
     except (OSError, ValueError, AttributeError):
         return []
@@ -140,6 +144,9 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
     the extras then show up in ``warnings`` as lost.
     """
     if not streams:
+        # ffprobe couldn't describe the file, so only the first video stream
+        # and the audio can be mapped blind. Say so instead of silently
+        # narrowing the "every stream" behaviour.
         return StreamPlan(
             args=[
                 "-map",
@@ -154,7 +161,8 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
                 "aac",
                 "-b:a",
                 "128k",
-            ]
+            ],
+            warnings=["couldn't read stream details with ffprobe; encoding only the first video stream and the audio"],
         )
 
     videos: list[dict[str, Any]] = []

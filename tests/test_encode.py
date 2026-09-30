@@ -208,14 +208,14 @@ def test_encode_one_reports_failure_if_retry_also_fails(tmp_path: Path, monkeypa
 
 def test_unique_output_path_counts_up_past_every_collision(tmp_path: Path) -> None:
     in_path = tmp_path / "clip.mov"
-    assert encode_module.unique_output_path(in_path).name == "clip (HEVC).mp4"
+    assert encode_module.reserve_output_path(in_path).name == "clip (HEVC).mp4"
 
     (tmp_path / "clip (HEVC).mp4").touch()
-    assert encode_module.unique_output_path(in_path).name == "clip (HEVC) 2.mp4"
+    assert encode_module.reserve_output_path(in_path).name == "clip (HEVC) 2.mp4"
 
     (tmp_path / "clip (HEVC) 2.mp4").touch()
     (tmp_path / "clip (HEVC) 3.mp4").touch()
-    assert encode_module.unique_output_path(in_path).name == "clip (HEVC) 4.mp4"
+    assert encode_module.reserve_output_path(in_path).name == "clip (HEVC) 4.mp4"
 
 
 def test_repeated_collisions_never_overwrite_earlier_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,16 +234,70 @@ def test_repeated_collisions_never_overwrite_earlier_outputs(tmp_path: Path, mon
     ]
 
 
-def test_ffmpeg_never_overwrites_an_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_output_name_is_reserved_before_ffmpeg_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     in_path = tmp_path / "clip.mov"
     in_path.write_bytes(b"1" * 1024)
     (tmp_path / "work").mkdir()
+    reserved_at_spawn: list[bool] = []
+
+    def popen(cmd: list[str], **kwargs: object) -> _FakeProc:
+        reserved_at_spawn.append(Path(cmd[-1]).exists())
+        Path(cmd[-1]).write_bytes(b"0" * 512)
+        assert "-y" in cmd, "ffmpeg overwrites the placeholder we created, nothing else"
+        return _FakeProc([], 0)
+
+    monkeypatch.setattr(encode_module.subprocess, "Popen", popen)
+
+    assert encode_one(1, 1, in_path, tmp_path / "work", Progress()).ok
+    assert reserved_at_spawn == [True]
+
+
+def test_reserving_is_exclusive_and_creates_the_file(tmp_path: Path) -> None:
+    in_path = tmp_path / "clip.mov"
+
+    first = encode_module.reserve_output_path(in_path)
+    second = encode_module.reserve_output_path(in_path)
+
+    assert (first.name, second.name) == ("clip (HEVC).mp4", "clip (HEVC) 2.mp4")
+    assert first.exists() and second.exists()
+
+
+def test_failure_never_deletes_a_file_this_run_did_not_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a pre-existing output must survive both failure and retry cleanup."""
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    foreign = tmp_path / "clip (HEVC).mp4"
+    foreign.write_bytes(b"someone else's output")
+    (tmp_path / "work").mkdir()
+    src = [
+        {"index": 0, "codec_type": "video"},
+        {"index": 1, "codec_type": "data", "codec_tag_string": "mebx"},
+    ]
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: src)
     seen: list[list[str]] = []
-    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([0], seen))
+    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([234, 1], seen))
 
-    encode_one(1, 1, in_path, tmp_path / "work", Progress())
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
 
-    assert "-n" in seen[0] and "-y" not in seen[0]
+    assert not result.ok
+    assert foreign.read_bytes() == b"someone else's output"
+    assert [p.name for p in tmp_path.glob("*.mp4")] == ["clip (HEVC).mp4"], "our own placeholder is cleaned up"
+
+
+def test_no_placeholder_is_left_behind_when_setup_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    (tmp_path / "work").mkdir()
+
+    def boom(path: Path) -> list[dict[str, object]]:
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(encode_module, "probe_streams", boom)
+
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
+
+    assert not result.ok
+    assert not list(tmp_path.glob("*.mp4"))
 
 
 # --- larger output -----------------------------------------------------------
