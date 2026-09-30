@@ -171,7 +171,9 @@ def test_encode_one_retries_without_extras_when_container_rejects_them(
     assert "WARN" in log and "dropped" in log
 
 
-def test_encode_one_does_not_retry_when_nothing_best_effort_was_mapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_encode_one_does_not_retry_when_nothing_best_effort_was_mapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     in_path = tmp_path / "clip.mov"
     in_path.write_bytes(b"1" * 1024)
     (tmp_path / "work").mkdir()
@@ -225,7 +227,11 @@ def test_repeated_collisions_never_overwrite_earlier_outputs(tmp_path: Path, mon
     for _ in range(3):
         assert encode_one(1, 1, in_path, tmp_path / "work", Progress()).ok
 
-    assert sorted(p.name for p in tmp_path.glob("*.mp4")) == ["clip (HEVC) 2.mp4", "clip (HEVC) 3.mp4", "clip (HEVC).mp4"]
+    assert sorted(p.name for p in tmp_path.glob("*.mp4")) == [
+        "clip (HEVC) 2.mp4",
+        "clip (HEVC) 3.mp4",
+        "clip (HEVC).mp4",
+    ]
 
 
 def test_ffmpeg_never_overwrites_an_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,7 +250,9 @@ def test_ffmpeg_never_overwrites_an_existing_file(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.parametrize("in_size", [100, 512])  # output is 512 bytes: larger, then equal
-def test_output_not_smaller_is_discarded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_log: Path, in_size: int) -> None:
+def test_output_not_smaller_is_discarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_log: Path, in_size: int
+) -> None:
     in_path = tmp_path / "clip.mov"
     in_path.write_bytes(b"1" * in_size)
     (tmp_path / "work").mkdir()
@@ -307,7 +315,9 @@ def test_failing_to_copy_timestamps_is_not_fatal(tmp_path: Path, monkeypatch: py
 # --- unexpected exceptions ---------------------------------------------------
 
 
-def test_unexpected_exception_becomes_a_failed_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_log: Path) -> None:
+def test_unexpected_exception_becomes_a_failed_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_log: Path
+) -> None:
     in_path = tmp_path / "clip.mov"
     in_path.write_bytes(b"1" * 1024)
     (tmp_path / "work").mkdir()
@@ -356,7 +366,9 @@ def test_unreadable_input_is_a_failed_result_not_a_crash(tmp_path: Path) -> None
     assert not result.ok and result.in_bytes == 0 and result.error
 
 
-def test_interrupt_exit_is_not_swallowed_by_the_failure_handler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_interrupt_exit_is_not_swallowed_by_the_failure_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     in_path = tmp_path / "clip.mov"
     in_path.write_bytes(b"1" * 1024)
     (tmp_path / "work").mkdir()
@@ -419,7 +431,9 @@ def test_interrupt_terminates_ffmpeg_and_removes_partial_output(clean_current, t
     assert proc.terminated and not out.exists()
 
 
-def test_signal_during_spawn_is_deferred_then_replayed(clean_current, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_signal_during_spawn_is_deferred_then_replayed(
+    clean_current, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The race: a signal lands while Popen is still returning."""
     out = tmp_path / "out.mp4"
     proc = _KillableProc()
@@ -441,7 +455,9 @@ def test_signal_during_spawn_is_deferred_then_replayed(clean_current, tmp_path: 
     assert not out.exists()
 
 
-def test_spawn_without_a_signal_registers_the_process(clean_current, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_without_a_signal_registers_the_process(
+    clean_current, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     proc = _KillableProc()
     monkeypatch.setattr(encode_module.subprocess, "Popen", lambda cmd, **kw: proc)
     out = tmp_path / "out.mp4"

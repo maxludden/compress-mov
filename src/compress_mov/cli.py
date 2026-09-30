@@ -100,7 +100,9 @@ def main(
             bytes_in = sum(r.in_bytes for r in done)
             bytes_out = sum(r.out_bytes for r in done)
             overall = saved_pct(bytes_in, bytes_out)
-            summary = f"{len(done)}/{total} compressed: {human(bytes_in)} → {human(bytes_out)} ({delta_phrase(overall)})"
+            summary = (
+                f"{len(done)}/{total} compressed: {human(bytes_in)} → {human(bytes_out)} ({delta_phrase(overall)})"
+            )
         else:
             summary = f"0/{total} compressed"
         if skipped:
@@ -110,7 +112,11 @@ def main(
         console.print(summary)
 
     if os.environ.get("COMPRESS_MOV_LAUNCHED"):
-        msg = f"Finished compressing {len(done)} video(s)" if not failed else "Finished with errors — see the Terminal window"
+        msg = (
+            f"Finished compressing {len(done)} video(s)"
+            if not failed
+            else "Finished with errors — see the Terminal window"
+        )
         notify("compress-mov", msg)
 
     raise typer.Exit(1 if failed else 0)

@@ -33,7 +33,9 @@ def test_should_relaunch_when_fully_headless_on_macos(headless: None) -> None:
 
 
 @pytest.mark.parametrize("stream", ["stdin", "stdout", "stderr"])
-def test_should_not_relaunch_if_any_stream_is_a_tty(headless: None, monkeypatch: pytest.MonkeyPatch, stream: str) -> None:
+def test_should_not_relaunch_if_any_stream_is_a_tty(
+    headless: None, monkeypatch: pytest.MonkeyPatch, stream: str
+) -> None:
     # e.g. `compress-mov x.mov 2>log.txt` from an interactive shell.
     monkeypatch.setattr(sys, stream, _Stream(True))
 
@@ -60,7 +62,9 @@ def test_self_command_uses_interpreter_module_not_argv0() -> None:
 
 
 def test_build_launcher_script_quotes_arguments(tmp_path: Path) -> None:
-    script = build_launcher_script(["/usr/bin/python3", "-m", "compress_mov"], ["-r", "/Users/me/My Videos/it's.mov"], tmp_path)
+    script = build_launcher_script(
+        ["/usr/bin/python3", "-m", "compress_mov"], ["-r", "/Users/me/My Videos/it's.mov"], tmp_path
+    )
 
     assert script.startswith("#!/bin/zsh\n")
     assert f"rm -rf -- {tmp_path}" in script
@@ -85,7 +89,9 @@ def test_relaunch_writes_executable_launcher_and_opens_it(monkeypatch: pytest.Mo
     assert f"/opt/py -m compress_mov -r {clip}" in text
 
 
-def test_relaunch_makes_relative_paths_absolute_but_keeps_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_relaunch_makes_relative_paths_absolute_but_keeps_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     calls: list[list[str]] = []
@@ -108,7 +114,9 @@ def test_relaunch_honours_terminal_override(monkeypatch: pytest.MonkeyPatch, tmp
     assert calls[0][:3] == [terminal.OPEN, "-a", "iTerm"]
 
 
-def test_relaunch_failure_cleans_up_and_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_relaunch_failure_cleans_up_and_exits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setenv("TMPDIR", str(tmp_path))
 
     def boom(cmd: list[str], **kw: object) -> None:

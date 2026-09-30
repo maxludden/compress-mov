@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from rich.progress import Progress, TaskID
 
@@ -40,7 +41,7 @@ class _Current:
     handle is recorded (see :func:`_spawn`).
     """
 
-    proc: subprocess.Popen | None = None
+    proc: subprocess.Popen[str] | None = None
     out_path: Path | None = None
     starting: bool = False
     pending: int | None = None
@@ -71,7 +72,7 @@ def handle_interrupt(signum: int, frame: object) -> None:
     sys.exit(130)
 
 
-def _spawn(cmd: list[str], err_fh: object, out_path: Path) -> subprocess.Popen:
+def _spawn(cmd: list[str], err_fh: IO[str], out_path: Path) -> subprocess.Popen[str]:
     """Start ffmpeg and register it for signal cleanup without a race.
 
     The output path is recorded first, and a signal that lands while
@@ -149,8 +150,16 @@ def probe_duration(path: Path) -> float:
     if d <= 0:
         d = _run(
             [
-                FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
-                "-of", "default=nk=1:nw=1", str(path),
+                FFPROBE,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "default=nk=1:nw=1",
+                str(path),
             ]
         )
     return d
@@ -189,7 +198,13 @@ def _log_ffmpeg_stderr(err_file: Path) -> None:
 
 
 def _run_ffmpeg(
-    cmd: list[str], out_path: Path, err_file: Path, progress: Progress, task_id: TaskID, task_total: int | None, label: str
+    cmd: list[str],
+    out_path: Path,
+    err_file: Path,
+    progress: Progress,
+    task_id: TaskID,
+    task_total: int | None,
+    label: str,
 ) -> int:
     """Run one ffmpeg attempt, feeding its -progress output to `progress`."""
     # ffmpeg's stderr goes to a file, not a pipe: if warnings ever exceed the

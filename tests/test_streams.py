@@ -62,7 +62,15 @@ def test_hdr_transfer_forces_10bit_even_when_tagged_8bit(transfer: str) -> None:
 
 def test_colour_tags_are_preserved() -> None:
     plan = plan_streams(
-        [video(pix_fmt="yuv420p10le", color_primaries="bt2020", color_transfer="arib-std-b67", color_space="bt2020nc", color_range="tv")]
+        [
+            video(
+                pix_fmt="yuv420p10le",
+                color_primaries="bt2020",
+                color_transfer="arib-std-b67",
+                color_space="bt2020nc",
+                color_range="tv",
+            )
+        ]
     )
 
     got = dict(pairs(plan.args))
@@ -211,7 +219,9 @@ def test_probe_streams_parses_ffprobe_json(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 @pytest.mark.parametrize("stdout", ["", "not json", "[]", '{"streams": "oops"}'])
-def test_probe_streams_returns_empty_on_bad_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdout: str) -> None:
+def test_probe_streams_returns_empty_on_bad_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdout: str
+) -> None:
     monkeypatch.setattr(streams_module.subprocess, "run", lambda *a, **k: _Completed(stdout))
 
     assert probe_streams(tmp_path / "x.mov") == []

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from .bins import CAFFEINATE
 
@@ -17,7 +17,7 @@ def caffeinate() -> Iterator[None]:
     Tied to our own pid (`-w`) as a safety net: if we're killed outright,
     caffeinate exits with us instead of holding the assertion forever.
     """
-    proc: subprocess.Popen | None = None
+    proc: subprocess.Popen[bytes] | None = None
     try:
         proc = subprocess.Popen([CAFFEINATE, "-i", "-w", str(os.getpid())])
     except FileNotFoundError:

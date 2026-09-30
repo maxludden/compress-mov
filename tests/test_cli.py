@@ -51,7 +51,9 @@ def test_appledouble_sidecars_are_not_encoded(monkeypatch: pytest.MonkeyPatch, t
     (tmp_path / "._IMG_1.mov").write_bytes(b"x")
     seen: list[str] = []
 
-    def fake_encode(i: int, total: int, video: Path, work_dir: Path, progress: object, keep_larger: bool = False) -> EncodeResult:
+    def fake_encode(
+        i: int, total: int, video: Path, work_dir: Path, progress: object, keep_larger: bool = False
+    ) -> EncodeResult:
         seen.append(video.name)
         return EncodeResult(True, 1000, 400, 1.0, 0)
 
@@ -111,7 +113,9 @@ def test_notifies_only_when_launched_from_quick_action(monkeypatch: pytest.Monke
     assert messages == [("compress-mov", "Finished compressing 1 video(s)")]
 
 
-def test_run_without_arguments_prints_usage(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_without_arguments_prints_usage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(cli.sys, "argv", ["compress-mov"])
 
     with pytest.raises(SystemExit) as exc:
@@ -185,10 +189,14 @@ def test_keep_larger_flag_is_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert flags == [False, True]
 
 
-def test_unexpected_error_result_shows_reason_and_batch_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_unexpected_error_result_shows_reason_and_batch_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     (tmp_path / "a.mov").write_bytes(b"x")
     (tmp_path / "b.mov").write_bytes(b"x")
-    results = iter([EncodeResult(False, 10, 0, 0.0, -1, error="OSError: disk full"), EncodeResult(True, 100, 50, 1.0, 0)])
+    results = iter(
+        [EncodeResult(False, 10, 0, 0.0, -1, error="OSError: disk full"), EncodeResult(True, 100, 50, 1.0, 0)]
+    )
     monkeypatch.setattr(cli, "encode_one", lambda *a, **k: next(results))
 
     result = _invoke(str(tmp_path))

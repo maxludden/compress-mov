@@ -114,7 +114,9 @@ def _video_args(video: dict[str, Any], n: int) -> tuple[list[str], list[str]]:
 
     warnings = []
     if has_alpha(video):
-        warnings.append(f"video stream {video.get('index')}: alpha channel isn't supported by HEVC .mp4 and was dropped")
+        warnings.append(
+            f"video stream {video.get('index')}: alpha channel isn't supported by HEVC .mp4 and was dropped"
+        )
     return args, warnings
 
 
@@ -139,7 +141,20 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
     """
     if not streams:
         return StreamPlan(
-            args=["-map", "0:v:0", "-map", "0:a?", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-c:a", "aac", "-b:a", "128k"]
+            args=[
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-pix_fmt",
+                "yuv420p",
+                "-tag:v",
+                "hvc1",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+            ]
         )
 
     videos: list[dict[str, Any]] = []
@@ -167,7 +182,9 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
         return s.get("codec_name") in TEXT_SUBTITLE_CODECS
 
     def label(s: dict[str, Any]) -> str:
-        return f"{s.get('codec_type')} stream {s.get('index')} ({s.get('codec_name') or s.get('codec_tag_string') or '?'})"
+        return (
+            f"{s.get('codec_type')} stream {s.get('index')} ({s.get('codec_name') or s.get('codec_tag_string') or '?'})"
+        )
 
     args: list[str] = []
     warnings: list[str] = []
@@ -214,8 +231,6 @@ def plan_streams(streams: list[dict[str, Any]], keep_extras: bool = True) -> Str
             lost += data
 
     if lost:
-        warnings.append(
-            "can't be stored in .mp4 and was dropped: " + ", ".join(label(x) for x in lost)
-        )
+        warnings.append("can't be stored in .mp4 and was dropped: " + ", ".join(label(x) for x in lost))
 
     return StreamPlan(args=args, warnings=warnings, extras=extras, dropped=dropped)
