@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 
+# macOS
+.DS_Store
+._*
+
 # Virtual environments
 .venv
 
@@ -13,3 +17,5 @@ wheels/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+.coverage
+htmlcov/

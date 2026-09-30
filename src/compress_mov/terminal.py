@@ -1,7 +1,7 @@
 """Relaunching in a real terminal for Finder Quick Action use.
 
-A Quick Action has no terminal, so when stderr isn't a TTY the CLI
-reopens itself in Terminal.app (or $COMPRESS_MOV_TERMINAL, e.g. iTerm)
+A Quick Action has no terminal, so when it's clearly running headless the
+CLI reopens itself in Terminal.app (or $COMPRESS_MOV_TERMINAL, e.g. iTerm)
 before doing anything else.
 """
 
@@ -19,13 +19,53 @@ from pathlib import Path
 from .bins import OPEN
 
 
-def relaunch_in_terminal(argv: list[str], self_path: Path) -> None:
-    """Reopen `self_path` with `argv` inside a Terminal.app window.
+def should_relaunch() -> bool:
+    """True when we look like a Finder Quick Action rather than a shell.
+
+    Relaunching opens a GUI window and returns immediately, so it must not
+    fire for merely redirected output (``2>log``), ssh sessions or non-macOS
+    hosts. Requires all of stdin/stdout/stderr to be non-TTY, macOS, no
+    ``SSH_CONNECTION``, and no ``COMPRESS_MOV_NO_RELAUNCH`` opt-out.
+    """
+    if sys.platform != "darwin":
+        return False
+    env = os.environ
+    if "COMPRESS_MOV_LAUNCHED" in env or "COMPRESS_MOV_NO_RELAUNCH" in env or "SSH_CONNECTION" in env:
+        return False
+    return not any(stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr))
+
+
+def self_command() -> list[str]:
+    """Command that re-runs this program, however it was started.
+
+    ``python -m compress_mov`` leaves ``sys.argv[0]`` pointing at a
+    non-executable ``__main__.py``, so the launcher goes through the
+    interpreter instead of trusting argv[0].
+    """
+    return [sys.executable, "-m", "compress_mov"]
+
+
+def build_launcher_script(command: list[str], args: list[str], tmp_dir: Path) -> str:
+    """zsh source for the ``.command`` launcher."""
+    quoted_cmd = " ".join(shlex.quote(c) for c in [*command, *args])
+    return textwrap.dedent(f"""\
+        #!/bin/zsh
+        rm -rf -- {shlex.quote(str(tmp_dir))}
+        COMPRESS_MOV_LAUNCHED=1 {quoted_cmd}
+        print
+        read -k1 "?Done — press any key to close…"
+        exit
+        """)
+
+
+def relaunch_in_terminal(argv: list[str], command: list[str] | None = None) -> None:
+    """Reopen the CLI with `argv` inside a Terminal.app window.
 
     Writes a `.command` launcher to a scratch dir (sidesteps AppleScript
     string escaping entirely) and hands it to `open -a <app>`. The
-    launcher deletes its own directory, runs the script with
-    COMPRESS_MOV_LAUNCHED=1, then waits for a keypress before closing.
+    launcher deletes its own directory, runs `command` (default: this
+    interpreter via ``-m compress_mov``) with COMPRESS_MOV_LAUNCHED=1, then waits for a keypress
+    before closing.
     """
     app_name = os.environ.get("COMPRESS_MOV_TERMINAL", "Terminal")
 
@@ -37,15 +77,7 @@ def relaunch_in_terminal(argv: list[str], self_path: Path) -> None:
     tmp_dir = Path(tempfile.mkdtemp(prefix="compress-mov.", dir=os.environ.get("TMPDIR", "/tmp")))
     launcher = tmp_dir / "compress-mov.command"
 
-    quoted_args = " ".join(shlex.quote(a) for a in abs_args)
-    script = textwrap.dedent(f"""\
-        #!/bin/zsh
-        rm -rf -- {shlex.quote(str(tmp_dir))}
-        COMPRESS_MOV_LAUNCHED=1 {shlex.quote(str(self_path))} {quoted_args}
-        print
-        read -k1 "?Done — press any key to close…"
-        exit
-        """)
+    script = build_launcher_script(command or self_command(), abs_args, tmp_dir)
     launcher.write_text(script)
     launcher.chmod(0o755)
 

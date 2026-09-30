@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
+from typing import IO
 
-from rich.progress import Progress
+from rich.progress import Progress, TaskID
 
 from . import logs
 from .bins import FFMPEG, FFPROBE
-from .formatting import clock, human
+from .formatting import clock, human, saved_pct
+from .streams import StreamPlan, plan_streams, probe_streams
 from .ui import console
 
 
@@ -24,13 +26,25 @@ class EncodeResult:
     out_bytes: int
     elapsed: float
     rc: int
+    # The encode worked but the output wasn't smaller, so it was deleted.
+    discarded: bool = False
+    # Set when an unexpected exception (not an ffmpeg exit code) failed the file.
+    error: str | None = None
 
 
 class _Current:
-    """The in-flight ffmpeg process, tracked so a signal can clean it up."""
+    """The in-flight ffmpeg process, tracked so a signal can clean it up.
 
-    proc: subprocess.Popen | None = None
+    `starting` covers the window between forking ffmpeg and recording its
+    handle: a signal arriving then can't kill a process we don't have a
+    reference to yet, so it's parked in `pending` and replayed once the
+    handle is recorded (see :func:`_spawn`).
+    """
+
+    proc: subprocess.Popen[str] | None = None
     out_path: Path | None = None
+    starting: bool = False
+    pending: int | None = None
 
 
 _CURRENT = _Current()
@@ -43,6 +57,9 @@ def handle_interrupt(signum: int, frame: object) -> None:
     running detached, still writing into a file whose path we already
     removed.
     """
+    if _CURRENT.starting:
+        _CURRENT.pending = signum
+        return
     if _CURRENT.proc is not None:
         _CURRENT.proc.terminate()
         try:
@@ -53,6 +70,73 @@ def handle_interrupt(signum: int, frame: object) -> None:
         _CURRENT.out_path.unlink()
     console.print("compress-mov: interrupted")
     sys.exit(130)
+
+
+def _spawn(cmd: list[str], err_fh: IO[str], out_path: Path) -> subprocess.Popen[str]:
+    """Start ffmpeg and register it for signal cleanup without a race.
+
+    The output path is recorded first, and a signal that lands while
+    Popen is still returning is deferred and replayed here, once the
+    process handle exists, so it terminates ffmpeg and removes the file.
+    """
+    _CURRENT.out_path = out_path
+    _CURRENT.pending = None
+    _CURRENT.starting = True
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_fh, text=True, bufsize=1)
+        _CURRENT.proc = proc
+    finally:
+        _CURRENT.starting = False
+        pending, _CURRENT.pending = _CURRENT.pending, None
+        if pending is not None:
+            handle_interrupt(pending, None)
+    return proc
+
+
+def _abort_current() -> None:
+    """Best-effort cleanup after an unexpected exception mid-encode."""
+    proc, out_path = _CURRENT.proc, _CURRENT.out_path
+    _CURRENT.proc = _CURRENT.out_path = None
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+        proc.wait()
+    if out_path is not None:
+        out_path.unlink(missing_ok=True)
+
+
+def reserve_output_path(in_path: Path) -> Path:
+    """Atomically claim ``<stem> (HEVC).mp4`` next to the input, or the first free ``... (HEVC) N.mp4``.
+
+    The file is created here with ``O_EXCL``, so the name is ours even if
+    another process is picking outputs at the same moment, and every later
+    cleanup (failure, discard, interrupt) only ever deletes a file this run
+    created. ffmpeg then overwrites the empty placeholder (``-y``). A counter,
+    not a timestamp, so any number of collisions get distinct names.
+    """
+    n = 1
+    while True:
+        name = f"{in_path.stem} (HEVC).mp4" if n == 1 else f"{in_path.stem} (HEVC) {n}.mp4"
+        candidate = in_path.with_name(name)
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            n += 1
+            continue
+        os.close(fd)
+        return candidate
+
+
+def _copy_times(src: Path, dst: Path) -> None:
+    """Give the output the source's access/modification times.
+
+    Keeps Finder sort order and Photos import dates. On macOS, setting an
+    mtime earlier than the birth time also pulls the birth time back to it.
+    """
+    try:
+        st = src.stat()
+        os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError:
+        pass
 
 
 def probe_duration(path: Path) -> float:
@@ -69,55 +153,77 @@ def probe_duration(path: Path) -> float:
         except ValueError:
             return 0.0
 
-    d = _run([FFPROBE, "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", str(path)])
+    d = _run([FFPROBE, "-v", "error", "-show_entries", "format=duration", "-of", "default=nk=1:nw=1", "-i", str(path)])
     if d <= 0:
         d = _run(
             [
-                FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
-                "-of", "default=nk=1:nw=1", str(path),
+                FFPROBE,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "default=nk=1:nw=1",
+                "-i",
+                str(path),
             ]
         )
     return d
 
 
-def encode_one(index: int, total: int, in_path: Path, work_dir: Path, progress: Progress) -> EncodeResult:
-    """Encode one file to HEVC .mp4 next to the original, updating `progress`."""
-    out_path = in_path.with_name(f"{in_path.stem} (HEVC).mp4")
-    if out_path.exists():
-        # Avoid overwriting if the batch (or a past run) already produced one.
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_path = in_path.with_name(f"{in_path.stem} (HEVC)-{stamp}.mp4")
-
-    duration = probe_duration(in_path)
-    in_bytes = in_path.stat().st_size
-    label = f"[{index}/{total}] {in_path.name}"
-
-    logs.log(f'START in="{in_path}" out="{out_path}" size="{human(in_bytes)}" duration="{duration}s"')
-
-    err_file = work_dir / f"stderr.{index}"
-    task_total = round(duration) if duration > 0 else None
-    task_id = progress.add_task(label, total=task_total)
-
-    cmd = [
+def _build_cmd(in_path: Path, out_path: Path, plan: StreamPlan) -> list[str]:
+    # The generic -c:v must come BEFORE the plan's arguments: when several
+    # codec options match a stream, ffmpeg applies the last one, so a generic
+    # `-c:v libx265` placed after a per-stream `-c:v:N copy` (cover art)
+    # would override it and try to encode the picture as HEVC.
+    return [
         FFMPEG, "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(in_path),
-        "-map", "0:v:0", "-map", "0:a?",
-        "-c:v", "libx265", "-preset", "slow", "-crf", "28",
-        "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
+        "-c:v", "libx265", "-preset", "slow", "-crf", "28", "-x265-params", "log-level=error",
+        *plan.args,
         "-movflags", "+faststart",
-        "-c:a", "aac", "-b:a", "128k",
         "-progress", "pipe:1", "-nostats",
         str(out_path),
-    ]
+    ]  # fmt: skip
 
-    start = time.monotonic()
+
+def _report_plan(plan: StreamPlan, in_path: Path, progress: Progress, reported: set[str]) -> None:
+    """Log/print the plan's losses, skipping any already reported for this file."""
+    for warning in plan.warnings:
+        if warning not in reported:
+            reported.add(warning)
+            logs.log(f'WARN in="{in_path}" {warning}')
+            progress.console.print(f"  ! {in_path.name}: {warning}", style="yellow")
+    for note in plan.dropped:
+        logs.log(f'DROP in="{in_path}" {note}')
+
+
+def _log_ffmpeg_stderr(err_file: Path) -> None:
+    try:
+        err_text = err_file.read_text().strip()
+    except OSError:
+        return
+    if err_text:
+        logs.log_block(f"ffmpeg: {err_text}")
+
+
+def _run_ffmpeg(
+    cmd: list[str],
+    out_path: Path,
+    err_file: Path,
+    progress: Progress,
+    task_id: TaskID,
+    task_total: int | None,
+    label: str,
+) -> int:
+    """Run one ffmpeg attempt, feeding its -progress output to `progress`."""
     # ffmpeg's stderr goes to a file, not a pipe: if warnings ever exceed the
     # OS pipe buffer before ffmpeg exits, a pipe would deadlock -- ffmpeg
     # blocked writing stderr while we're blocked waiting for stdout EOF.
     with err_file.open("w") as err_fh:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_fh, text=True, bufsize=1)
-        _CURRENT.proc = proc
-        _CURRENT.out_path = out_path
+        proc = _spawn(cmd, err_fh, out_path)
 
         speed = ""
         out_secs = 0.0
@@ -140,25 +246,95 @@ def encode_one(index: int, total: int, in_path: Path, work_dir: Path, progress: 
         rc = proc.wait()
 
     _CURRENT.proc = None
+    return rc
+
+
+def encode_one(
+    index: int, total: int, in_path: Path, work_dir: Path, progress: Progress, keep_larger: bool = False
+) -> EncodeResult:
+    """Encode one file to HEVC .mp4 next to the original, updating `progress`.
+
+    Never raises for an ordinary failure (unreadable file, full disk, ffmpeg
+    won't start...): one bad file is recorded as a failed result so the rest
+    of the batch still runs. ``SystemExit`` from the signal handler is not
+    an ``Exception`` and passes straight through.
+    """
+    try:
+        return _encode_one(index, total, in_path, work_dir, progress, keep_larger)
+    except Exception as exc:
+        _abort_current()
+        message = f"{type(exc).__name__}: {exc}"
+        logs.log(f'ERROR in="{in_path}" {message}')
+        try:
+            in_bytes = in_path.stat().st_size
+        except OSError:
+            in_bytes = 0
+        return EncodeResult(False, in_bytes, 0, 0.0, -1, error=message)
+
+
+def _encode_one(
+    index: int, total: int, in_path: Path, work_dir: Path, progress: Progress, keep_larger: bool
+) -> EncodeResult:
+    duration = probe_duration(in_path)
+    in_bytes = in_path.stat().st_size
+    out_path = reserve_output_path(in_path)
+    # Registered immediately so any exit path (error, signal) removes the
+    # placeholder we just created, and only that.
+    _CURRENT.out_path = out_path
+    label = f"[{index}/{total}] {in_path.name}"
+
+    logs.log(f'START in="{in_path}" out="{out_path}" size="{human(in_bytes)}" duration="{duration}s"')
+
+    err_file = work_dir / f"stderr.{index}"
+    task_total = round(duration) if duration > 0 else None
+    task_id = progress.add_task(label, total=task_total)
+    start = time.monotonic()
+    try:
+        streams = probe_streams(in_path)
+        plan = plan_streams(streams)
+        reported: set[str] = set()
+        _report_plan(plan, in_path, progress, reported)
+
+        rc = _run_ffmpeg(_build_cmd(in_path, out_path, plan), out_path, err_file, progress, task_id, task_total, label)
+
+        if rc != 0 and plan.extras:
+            # The container rejected a best-effort stream (ffmpeg reports that
+            # when writing the header). Retry once without them rather than
+            # failing the whole file over a cover image or metadata track.
+            logs.log(f'RETRY in="{in_path}" rc={rc} without: {", ".join(plan.extras)}')
+            _log_ffmpeg_stderr(err_file)
+            # No unlink: the reserved file is ours and the retry's -y overwrites it.
+            plan = plan_streams(streams, keep_extras=False)
+            _report_plan(plan, in_path, progress, reported)
+            rc = _run_ffmpeg(
+                _build_cmd(in_path, out_path, plan), out_path, err_file, progress, task_id, task_total, label
+            )
+    finally:
+        progress.remove_task(task_id)
     elapsed = time.monotonic() - start
-    progress.remove_task(task_id)
 
     if rc != 0:
         logs.log(f'FAIL in="{in_path}" out="{out_path}" rc={rc}')
-        err_text = err_file.read_text().strip()
-        if err_text:
-            with logs.LOG_FILE.open("a") as f:
-                f.write(f"  ffmpeg: {err_text}\n")
-        if out_path.exists():
-            out_path.unlink()
+        _log_ffmpeg_stderr(err_file)
+        out_path.unlink(missing_ok=True)
         _CURRENT.out_path = None
         return EncodeResult(False, in_bytes, 0, elapsed, rc)
 
     out_bytes = out_path.stat().st_size
-    saved = 100.0 * (in_bytes - out_bytes) / in_bytes
+    if out_bytes >= in_bytes and not keep_larger:
+        # Re-encoding didn't help; the original is untouched, so the bigger
+        # file would only be clutter.
+        out_path.unlink(missing_ok=True)
+        _CURRENT.out_path = None
+        logs.log(
+            f'SKIP in="{in_path}" in_bytes={in_bytes} out_bytes={out_bytes} reason="output not smaller; discarded"'
+        )
+        return EncodeResult(True, in_bytes, out_bytes, elapsed, 0, discarded=True)
+
+    _copy_times(in_path, out_path)
     logs.log(
         f'DONE in="{in_path}" out="{out_path}" in_bytes={in_bytes} out_bytes={out_bytes} '
-        f'saved="{saved:.1f}%" elapsed="{clock(elapsed)}"'
+        f'saved="{saved_pct(in_bytes, out_bytes):.1f}%" elapsed="{clock(elapsed)}"'
     )
     _CURRENT.out_path = None
     return EncodeResult(True, in_bytes, out_bytes, elapsed, 0)

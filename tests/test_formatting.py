@@ -49,3 +49,13 @@ def test_delta_phrase(pct: float, expected: str) -> None:
 )
 def test_clock(seconds: float, expected: str) -> None:
     assert clock(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("in_bytes", "out_bytes", "expected"),
+    [(1000, 250, 75.0), (1000, 1000, 0.0), (1000, 1500, -50.0), (0, 0, 0.0), (0, 10, 0.0)],
+)
+def test_saved_pct(in_bytes: int, out_bytes: int, expected: float) -> None:
+    from compress_mov.formatting import saved_pct
+
+    assert saved_pct(in_bytes, out_bytes) == expected

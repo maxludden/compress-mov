@@ -25,3 +25,10 @@ def clock(seconds: float) -> str:
     if t >= 3600:
         return f"{t // 3600}:{(t % 3600) // 60:02d}:{t % 60:02d}"
     return f"{t // 60}:{t % 60:02d}"
+
+
+def saved_pct(in_bytes: int, out_bytes: int) -> float:
+    """Percentage saved (negative if the output grew); 0.0 for an empty input."""
+    if in_bytes <= 0:
+        return 0.0
+    return 100.0 * (in_bytes - out_bytes) / in_bytes
