@@ -5,9 +5,14 @@ of .mov files to encode.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from .ui import console
+
+# Where scan notes go. The CLI prints them to the console; other front ends
+# (the TUI) pass their own sink so nothing is written over their screen.
+Say = Callable[[str], None]
 
 
 def _is_wanted(path: Path, directory: Path) -> bool:
@@ -21,7 +26,7 @@ def _is_wanted(path: Path, directory: Path) -> bool:
         return False
 
 
-def find_mov_files(directory: Path, recursive: bool) -> list[Path]:
+def find_mov_files(directory: Path, recursive: bool, say: Say = console.print) -> list[Path]:
     """.mov files directly inside `directory`, or at every depth with `recursive`.
 
     Matching is case-insensitive (.mov/.MOV/.Mov/...). Hidden files and
@@ -33,20 +38,20 @@ def find_mov_files(directory: Path, recursive: bool) -> list[Path]:
     try:
         candidates = list(directory.rglob("*") if recursive else directory.iterdir())
     except OSError as exc:
-        console.print(f"  skipping (can't read {directory.name}/): {exc.strerror or exc}")
+        say(f"  skipping (can't read {directory.name}/): {exc.strerror or exc}")
         return []
     return sorted(p for p in candidates if _is_wanted(p, directory))
 
 
-def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:
+def resolve_inputs(paths: list[Path], recursive: bool, say: Say = console.print) -> list[Path]:
     """Expand files/directories from the CLI into a flat, de-duplicated list.
 
     Each directory is expanded to the .mov files inside it. A file is used
     as-is if it has a .mov extension. Anything else is skipped with a note
-    printed to the console. A folder plus a file already inside it, passed
-    together, is only encoded once.
+    reported through `say` (the console by default). A folder plus a file
+    already inside it, passed together, is only encoded once.
     """
-    console.print(f"[bold]▸[/bold] Scanning {len(paths)} input(s)…")
+    say(f"[bold]▸[/bold] Scanning {len(paths)} input(s)…")
 
     videos: list[Path] = []
     seen: set[Path] = set()
@@ -54,19 +59,19 @@ def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:
         try:
             is_dir, is_file = raw.is_dir(), raw.is_file()
         except OSError as exc:
-            console.print(f"  skipping (can't access {raw}): {exc.strerror or exc}")
+            say(f"  skipping (can't access {raw}): {exc.strerror or exc}")
             continue
         if is_dir:
-            found = find_mov_files(raw, recursive)
-            console.print(f"  {raw.name}/: {len(found)} .mov file(s)")
+            found = find_mov_files(raw, recursive, say)
+            say(f"  {raw.name}/: {len(found)} .mov file(s)")
         elif is_file:
             if raw.suffix.lower() == ".mov":
                 found = [raw]
             else:
-                console.print(f"  skipping (not a .mov): {raw.name}")
+                say(f"  skipping (not a .mov): {raw.name}")
                 found = []
         else:
-            console.print(f"  skipping (not found): {raw}")
+            say(f"  skipping (not found): {raw}")
             found = []
 
         for f in found:

@@ -15,6 +15,12 @@ dependencies = [
 
 [project.scripts]
 compress-mov = "compress_mov.cli:run"
+compress-mov-tui = "compress_mov.tui:run"
+
+[project.optional-dependencies]
+tui = [
+    "textual>=8.2.8",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]
@@ -25,6 +31,8 @@ dev = [
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
+    # So a plain `uv sync` can run the TUI tests; end users get it via the `tui` extra.
+    "textual>=8.2.8",
 ]
 
 [tool.ruff]

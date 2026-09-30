@@ -548,3 +548,21 @@ def test_generic_video_codec_precedes_per_stream_overrides(tmp_path: Path) -> No
     assert cmd.index("-c:v") < cmd.index("-c:v:1")
     assert cmd[cmd.index("-c:v") + 1] == "libx265"
     assert cmd[-1] == str(tmp_path / "out.mp4")
+
+
+def test_cancel_current_kills_ffmpeg_and_removes_only_its_output(
+    tmp_path: Path, clean_current: encode_module._Current
+) -> None:
+    """For front ends without the CLI's signal handlers (the TUI)."""
+    proc, out = _KillableProc(), tmp_path / "out.mp4"
+    out.write_bytes(b"partial")
+    clean_current.proc, clean_current.out_path = proc, out
+
+    encode_module.cancel_current()
+
+    assert proc.killed and not out.exists()
+    assert clean_current.proc is None and clean_current.out_path is None
+
+
+def test_cancel_current_is_a_no_op_when_nothing_is_running(clean_current: encode_module._Current) -> None:
+    encode_module.cancel_current()  # must not raise

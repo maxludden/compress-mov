@@ -64,6 +64,31 @@ stdin/stdout/stderr is a terminal) it reopens itself in a Terminal window, shows
 posts a notification banner when finished. Set `COMPRESS_MOV_TERMINAL=iTerm` to use a different
 terminal app, or `COMPRESS_MOV_NO_RELAUNCH=1` to disable the relaunch (it is also skipped over ssh).
 
+## Terminal UI (optional)
+
+An interactive front end, built on [Textual](https://textual.textualize.io), for queueing files and watching the
+encode. It is an optional extra with its own command, so the plain CLI stays lightweight and unchanged:
+
+```sh
+uv tool install 'compress-mov[tui]'     # or: pip install 'compress-mov[tui]'
+compress-mov-tui                         # empty queue
+compress-mov-tui -r ~/Movies/trip        # queue files/folders on startup (same -r / --keep-larger options)
+```
+
+| Key | Action                                                                 |
+| --- | ---------------------------------------------------------------------- |
+| `a` | Focus the path box: type or paste a file/folder (drag a file onto the terminal to paste its path), then Enter |
+| `s` | Start encoding the queue                                               |
+| `x` | Clear the queue (not while encoding)                                   |
+| `q` | Quit. If an encode is running, ffmpeg is stopped and its partial file removed |
+
+The **Recursive** and **Keep larger** switches match `-r` and `--keep-larger`. The queue shows each file's size,
+status (`queued`, `encoding`, `done`, `skipped`, `failed`, `cancelled`) and result; warnings and the final
+summary appear in the log pane. It uses the same encoder, output naming and log file as the CLI.
+
+Without the extra installed, `compress-mov-tui` prints how to install it and exits with status 1; `compress-mov`
+never imports Textual, so it is unaffected either way. The Finder Quick Action keeps using the CLI.
+
 ## What gets encoded
 
 - **Video:** libx265, `-preset slow -crf 28`, tagged `hvc1` so QuickTime and Apple devices play it.
@@ -96,7 +121,7 @@ retries, and ffmpeg's stderr for any failure. Logging is best-effort and never a
 ## Development
 
 ```sh
-uv sync
+uv sync                # includes Textual (dev group), so the TUI tests run too
 uv run pytest          # the suite mocks ffmpeg, so it doesn't need it installed
 uv run ruff check . && uv run ruff format --check .
 uv run mypy            # strict, on src/
@@ -111,5 +136,6 @@ CI runs the same checks (`.github/workflows/ci.yml`) on Linux and macOS.
 | `streams.py`    | Deciding what to keep: mapping, pixel format, colour tags, audio   |
 | `encode.py`     | ffprobe/ffmpeg runs, progress, retries, cleanup, signal handling   |
 | `terminal.py`   | Relaunching into Terminal for Quick Action use                     |
+| `tui/`          | Optional Textual front end (`compress-mov-tui`); only `tui/app.py` imports Textual |
 | `bins.py`       | Locating ffmpeg/ffprobe and the macOS helper binaries              |
 | `logs.py`, `notify.py`, `power.py`, `formatting.py`, `ui.py` | Log file, banners, sleep prevention, display helpers |
