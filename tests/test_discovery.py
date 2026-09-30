@@ -81,3 +81,38 @@ def test_resolve_inputs_preserves_first_seen_order(tmp_path: Path) -> None:
     videos = resolve_inputs([b, a], recursive=False)
 
     assert videos == [b.resolve(), a.resolve()]
+
+
+def test_find_mov_files_skips_appledouble_sidecars(tmp_path: Path) -> None:
+    (tmp_path / "IMG_1.mov").touch()
+    (tmp_path / "._IMG_1.mov").touch()
+    (tmp_path / ".hidden.mov").touch()
+
+    found = find_mov_files(tmp_path, recursive=False)
+
+    assert [p.name for p in found] == ["IMG_1.mov"]
+
+
+def test_find_mov_files_recursive_skips_hidden_directories(tmp_path: Path) -> None:
+    (tmp_path / "a.mov").touch()
+    trash = tmp_path / ".Trashes"
+    trash.mkdir()
+    (trash / "deleted.mov").touch()
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "._nested.mov").touch()
+    (sub / "nested.mov").touch()
+
+    found = find_mov_files(tmp_path, recursive=True)
+
+    assert {p.name for p in found} == {"a.mov", "nested.mov"}
+
+
+def test_find_mov_files_works_when_directory_itself_is_hidden(tmp_path: Path) -> None:
+    hidden = tmp_path / ".footage"
+    hidden.mkdir()
+    (hidden / "clip.mov").touch()
+
+    found = find_mov_files(hidden, recursive=True)
+
+    assert [p.name for p in found] == ["clip.mov"]

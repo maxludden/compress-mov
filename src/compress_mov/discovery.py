@@ -12,10 +12,19 @@ from .ui import console
 def find_mov_files(directory: Path, recursive: bool) -> list[Path]:
     """.mov files directly inside `directory`, or at every depth with `recursive`.
 
-    Matching is case-insensitive (.mov/.MOV/.Mov/...).
+    Matching is case-insensitive (.mov/.MOV/.Mov/...). Hidden files and
+    anything under a hidden directory are skipped: that covers the ``._*``
+    AppleDouble sidecars macOS writes on exFAT/SMB volumes (not real
+    videos), and ``.Trashes``/``.Spotlight-V100`` and friends.
     """
     candidates = directory.rglob("*") if recursive else directory.iterdir()
-    return sorted(p for p in candidates if p.is_file() and p.suffix.lower() == ".mov")
+    return sorted(
+        p
+        for p in candidates
+        if p.suffix.lower() == ".mov"
+        and not any(part.startswith(".") for part in p.relative_to(directory).parts)
+        and p.is_file()
+    )
 
 
 def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:

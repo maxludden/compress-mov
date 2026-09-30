@@ -12,13 +12,14 @@ from pathlib import Path
 import typer
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 
+from . import logs
+from .bins import missing_tools
 from .discovery import resolve_inputs
 from .encode import EncodeResult, encode_one, handle_interrupt
 from .formatting import clock, delta_phrase, human
-from .logs import LOG_FILE
 from .notify import notify
 from .power import caffeinate
-from .terminal import relaunch_in_terminal
+from .terminal import relaunch_in_terminal, should_relaunch
 from .ui import console
 
 app = typer.Typer(add_completion=False)
@@ -34,6 +35,14 @@ def main(
     """Compress .mov file(s) to HEVC .mp4, saved next to the originals."""
     signal.signal(signal.SIGINT, handle_interrupt)
     signal.signal(signal.SIGTERM, handle_interrupt)
+
+    missing = missing_tools()
+    if missing:
+        console.print(
+            f"compress-mov: {' and '.join(missing)} not found — install with `brew install ffmpeg`",
+            style="red",
+        )
+        raise typer.Exit(1)
 
     videos = resolve_inputs(paths, recursive)
     if not videos:
@@ -65,7 +74,7 @@ def main(
                         )
                     else:
                         console.print(
-                            f"[{i}/{total}] {video.name}  ✗ failed (exit {result.rc}) — see {LOG_FILE}",
+                            f"[{i}/{total}] {video.name}  ✗ failed (exit {result.rc}) — see {logs.LOG_FILE}",
                             style="red",
                         )
     finally:
@@ -105,8 +114,8 @@ def run() -> None:
         print("usage: compress-mov [-r] <file.mov | directory> [...]", file=sys.stderr)
         raise SystemExit(2)
 
-    if not sys.stderr.isatty() and "COMPRESS_MOV_LAUNCHED" not in os.environ:
-        relaunch_in_terminal(sys.argv[1:], self_path=Path(sys.argv[0]).resolve())
+    if should_relaunch():
+        relaunch_in_terminal(sys.argv[1:])
         raise SystemExit(0)
 
     app()
