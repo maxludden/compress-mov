@@ -38,6 +38,7 @@ def _fake_popen(lines: list[str], rc: int, *, write_output: bool = True):
 @pytest.fixture(autouse=True)
 def stub_probe_duration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(encode_module, "probe_duration", lambda path: 5.0)
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: [])
 
 
 def test_encode_one_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,3 +114,88 @@ def test_encode_one_writes_ffmpeg_stderr_to_log_on_failure(
     encode_one(1, 1, in_path, work_dir, Progress())
 
     assert "Error opening input file" in isolated_log.read_text()
+
+
+def _capturing_popen(rcs: list[int], seen: list[list[str]]):
+    """Popen fake that records each command and returns the queued exit codes."""
+
+    def popen(cmd: list[str], **kwargs: object) -> _FakeProc:
+        seen.append(cmd)
+        rc = rcs.pop(0)
+        if rc == 0:
+            Path(cmd[-1]).write_bytes(b"0" * 512)
+        return _FakeProc([], rc)
+
+    return popen
+
+
+def test_encode_one_passes_stream_plan_to_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    (tmp_path / "work").mkdir()
+    hdr = {"index": 0, "codec_type": "video", "pix_fmt": "yuv420p10le", "color_transfer": "arib-std-b67"}
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: [hdr])
+    seen: list[list[str]] = []
+    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([0], seen))
+
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
+
+    assert result.ok
+    cmd = seen[0]
+    assert cmd[cmd.index("-pix_fmt:v:0") + 1] == "yuv420p10le"
+    assert cmd[cmd.index("-color_trc:v:0") + 1] == "arib-std-b67"
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+
+
+def test_encode_one_retries_without_extras_when_container_rejects_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_log: Path
+) -> None:
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    (tmp_path / "work").mkdir()
+    src = [
+        {"index": 0, "codec_type": "video", "pix_fmt": "yuv420p"},
+        {"index": 1, "codec_type": "data", "codec_tag_string": "mebx"},
+    ]
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: src)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([234, 0], seen))
+
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
+
+    assert result.ok
+    assert len(seen) == 2
+    assert "0:1" in seen[0] and "0:1" not in seen[1]
+    log = isolated_log.read_text()
+    assert "RETRY" in log and "mebx" in log
+    assert "WARN" in log and "dropped" in log
+
+
+def test_encode_one_does_not_retry_when_nothing_best_effort_was_mapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    (tmp_path / "work").mkdir()
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: [{"index": 0, "codec_type": "video"}])
+    seen: list[list[str]] = []
+    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([1], seen))
+
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
+
+    assert not result.ok and result.rc == 1
+    assert len(seen) == 1
+
+
+def test_encode_one_reports_failure_if_retry_also_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    in_path = tmp_path / "clip.mov"
+    in_path.write_bytes(b"1" * 1024)
+    (tmp_path / "work").mkdir()
+    src = [{"index": 0, "codec_type": "video"}, {"index": 1, "codec_type": "data", "codec_tag_string": "mebx"}]
+    monkeypatch.setattr(encode_module, "probe_streams", lambda path: src)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(encode_module.subprocess, "Popen", _capturing_popen([234, 1], seen))
+
+    result = encode_one(1, 1, in_path, tmp_path / "work", Progress())
+
+    assert not result.ok and result.rc == 1
+    assert len(seen) == 2
+    assert not (tmp_path / "clip (HEVC).mp4").exists()

@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from rich.progress import Progress
+from rich.progress import Progress, TaskID
 
 from . import logs
 from .bins import FFMPEG, FFPROBE
 from .formatting import clock, human
+from .streams import StreamPlan, plan_streams, probe_streams
 from .ui import console
 
 
@@ -80,37 +81,40 @@ def probe_duration(path: Path) -> float:
     return d
 
 
-def encode_one(index: int, total: int, in_path: Path, work_dir: Path, progress: Progress) -> EncodeResult:
-    """Encode one file to HEVC .mp4 next to the original, updating `progress`."""
-    out_path = in_path.with_name(f"{in_path.stem} (HEVC).mp4")
-    if out_path.exists():
-        # Avoid overwriting if the batch (or a past run) already produced one.
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_path = in_path.with_name(f"{in_path.stem} (HEVC)-{stamp}.mp4")
-
-    duration = probe_duration(in_path)
-    in_bytes = in_path.stat().st_size
-    label = f"[{index}/{total}] {in_path.name}"
-
-    logs.log(f'START in="{in_path}" out="{out_path}" size="{human(in_bytes)}" duration="{duration}s"')
-
-    err_file = work_dir / f"stderr.{index}"
-    task_total = round(duration) if duration > 0 else None
-    task_id = progress.add_task(label, total=task_total)
-
-    cmd = [
+def _build_cmd(in_path: Path, out_path: Path, plan: StreamPlan) -> list[str]:
+    return [
         FFMPEG, "-hide_banner", "-loglevel", "warning", "-y",
         "-i", str(in_path),
-        "-map", "0:v:0", "-map", "0:a?",
-        "-c:v", "libx265", "-preset", "slow", "-crf", "28",
-        "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
+        *plan.args,
+        "-c:v", "libx265", "-preset", "slow", "-crf", "28", "-x265-params", "log-level=error",
         "-movflags", "+faststart",
-        "-c:a", "aac", "-b:a", "128k",
         "-progress", "pipe:1", "-nostats",
         str(out_path),
-    ]
+    ]  # fmt: skip
 
-    start = time.monotonic()
+
+def _report_plan(plan: StreamPlan, in_path: Path, progress: Progress, reported: set[str]) -> None:
+    """Log/print the plan's losses, skipping any already reported for this file."""
+    for warning in plan.warnings:
+        if warning not in reported:
+            reported.add(warning)
+            logs.log(f'WARN in="{in_path}" {warning}')
+            progress.console.print(f"  ! {in_path.name}: {warning}", style="yellow")
+    for note in plan.dropped:
+        logs.log(f'DROP in="{in_path}" {note}')
+
+
+def _log_ffmpeg_stderr(err_file: Path) -> None:
+    err_text = err_file.read_text().strip()
+    if err_text:
+        with logs.LOG_FILE.open("a") as f:
+            f.write(f"  ffmpeg: {err_text}\n")
+
+
+def _run_ffmpeg(
+    cmd: list[str], out_path: Path, err_file: Path, progress: Progress, task_id: TaskID, task_total: int | None, label: str
+) -> int:
+    """Run one ffmpeg attempt, feeding its -progress output to `progress`."""
     # ffmpeg's stderr goes to a file, not a pipe: if warnings ever exceed the
     # OS pipe buffer before ffmpeg exits, a pipe would deadlock -- ffmpeg
     # blocked writing stderr while we're blocked waiting for stdout EOF.
@@ -140,15 +144,53 @@ def encode_one(index: int, total: int, in_path: Path, work_dir: Path, progress: 
         rc = proc.wait()
 
     _CURRENT.proc = None
+    return rc
+
+
+def encode_one(index: int, total: int, in_path: Path, work_dir: Path, progress: Progress) -> EncodeResult:
+    """Encode one file to HEVC .mp4 next to the original, updating `progress`."""
+    out_path = in_path.with_name(f"{in_path.stem} (HEVC).mp4")
+    if out_path.exists():
+        # Avoid overwriting if the batch (or a past run) already produced one.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = in_path.with_name(f"{in_path.stem} (HEVC)-{stamp}.mp4")
+
+    duration = probe_duration(in_path)
+    in_bytes = in_path.stat().st_size
+    label = f"[{index}/{total}] {in_path.name}"
+
+    logs.log(f'START in="{in_path}" out="{out_path}" size="{human(in_bytes)}" duration="{duration}s"')
+
+    err_file = work_dir / f"stderr.{index}"
+    task_total = round(duration) if duration > 0 else None
+    task_id = progress.add_task(label, total=task_total)
+
+    streams = probe_streams(in_path)
+    plan = plan_streams(streams)
+    reported: set[str] = set()
+    _report_plan(plan, in_path, progress, reported)
+
+    start = time.monotonic()
+    rc = _run_ffmpeg(_build_cmd(in_path, out_path, plan), out_path, err_file, progress, task_id, task_total, label)
+
+    if rc != 0 and plan.extras:
+        # The container rejected a best-effort stream (ffmpeg reports that
+        # when writing the header). Retry once without them rather than
+        # failing the whole file over a cover image or metadata track.
+        logs.log(f'RETRY in="{in_path}" rc={rc} without: {", ".join(plan.extras)}')
+        _log_ffmpeg_stderr(err_file)
+        if out_path.exists():
+            out_path.unlink()
+        plan = plan_streams(streams, keep_extras=False)
+        _report_plan(plan, in_path, progress, reported)
+        rc = _run_ffmpeg(_build_cmd(in_path, out_path, plan), out_path, err_file, progress, task_id, task_total, label)
+
     elapsed = time.monotonic() - start
     progress.remove_task(task_id)
 
     if rc != 0:
         logs.log(f'FAIL in="{in_path}" out="{out_path}" rc={rc}')
-        err_text = err_file.read_text().strip()
-        if err_text:
-            with logs.LOG_FILE.open("a") as f:
-                f.write(f"  ffmpeg: {err_text}\n")
+        _log_ffmpeg_stderr(err_file)
         if out_path.exists():
             out_path.unlink()
         _CURRENT.out_path = None
