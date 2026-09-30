@@ -51,7 +51,7 @@ def test_appledouble_sidecars_are_not_encoded(monkeypatch: pytest.MonkeyPatch, t
     (tmp_path / "._IMG_1.mov").write_bytes(b"x")
     seen: list[str] = []
 
-    def fake_encode(i: int, total: int, video: Path, work_dir: Path, progress: object) -> EncodeResult:
+    def fake_encode(i: int, total: int, video: Path, work_dir: Path, progress: object, keep_larger: bool = False) -> EncodeResult:
         seen.append(video.name)
         return EncodeResult(True, 1000, 400, 1.0, 0)
 
@@ -145,3 +145,54 @@ def test_run_runs_app_directly_when_interactive(monkeypatch: pytest.MonkeyPatch)
     cli.run()
 
     assert ran == [True]
+
+
+def test_discarded_result_is_reported_and_is_not_a_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a.mov").write_bytes(b"x")
+    monkeypatch.setattr(cli, "encode_one", lambda *a, **k: EncodeResult(True, 1000, 1200, 1.0, 0, discarded=True))
+
+    result = _invoke(str(tmp_path))
+
+    assert result.exit_code == 0
+    assert "no savings" in result.output and "original kept" in result.output
+
+
+def test_batch_summary_counts_skipped_separately(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a.mov").write_bytes(b"x")
+    (tmp_path / "b.mov").write_bytes(b"x")
+    results = iter([EncodeResult(True, 2000, 1000, 1.0, 0), EncodeResult(True, 500, 900, 1.0, 0, discarded=True)])
+    monkeypatch.setattr(cli, "encode_one", lambda *a, **k: next(results))
+
+    result = _invoke(str(tmp_path))
+
+    assert result.exit_code == 0
+    assert "1/2 compressed: 2.0 KB → 1000 B (50.0% smaller), 1 skipped (no savings)" in result.output
+
+
+def test_keep_larger_flag_is_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a.mov").write_bytes(b"x")
+    flags: list[bool] = []
+
+    def fake_encode(*a: object, keep_larger: bool = False, **k: object) -> EncodeResult:
+        flags.append(keep_larger)
+        return EncodeResult(True, 100, 50, 1.0, 0)
+
+    monkeypatch.setattr(cli, "encode_one", fake_encode)
+
+    _invoke(str(tmp_path))
+    _invoke("--keep-larger", str(tmp_path))
+
+    assert flags == [False, True]
+
+
+def test_unexpected_error_result_shows_reason_and_batch_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (tmp_path / "a.mov").write_bytes(b"x")
+    (tmp_path / "b.mov").write_bytes(b"x")
+    results = iter([EncodeResult(False, 10, 0, 0.0, -1, error="OSError: disk full"), EncodeResult(True, 100, 50, 1.0, 0)])
+    monkeypatch.setattr(cli, "encode_one", lambda *a, **k: next(results))
+
+    result = _invoke(str(tmp_path))
+
+    assert result.exit_code == 1
+    assert "failed (OSError: disk full)" in result.output
+    assert "1/2 compressed" in result.output and "1 failed" in result.output

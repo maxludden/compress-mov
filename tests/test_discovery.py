@@ -116,3 +116,67 @@ def test_find_mov_files_works_when_directory_itself_is_hidden(tmp_path: Path) ->
     found = find_mov_files(hidden, recursive=True)
 
     assert [p.name for p in found] == ["clip.mov"]
+
+
+def test_resolve_inputs_keeps_symlink_path_so_output_lands_beside_the_link(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    target = media / "real.mov"
+    target.write_bytes(b"x")
+    project = tmp_path / "project"
+    project.mkdir()
+    link = project / "clip.mov"
+    link.symlink_to(target)
+
+    videos = resolve_inputs([project], recursive=False)
+
+    assert videos == [link]
+    assert videos[0].parent == project  # not media/
+
+
+def test_resolve_inputs_dedupes_a_symlink_and_its_target(tmp_path: Path) -> None:
+    target = tmp_path / "real.mov"
+    target.write_bytes(b"x")
+    link = tmp_path / "alias.mov"
+    link.symlink_to(target)
+
+    videos = resolve_inputs([link, target], recursive=False)
+
+    assert videos == [link]
+
+
+def test_resolve_inputs_normalises_dotdot_without_following_symlinks(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "sub").mkdir()
+    f = tmp_path / "clip.mov"
+    f.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path / "sub")
+
+    videos = resolve_inputs([Path("../clip.mov")], recursive=False)
+
+    assert videos == [f]
+
+
+def test_broken_symlink_is_skipped(tmp_path: Path) -> None:
+    (tmp_path / "dangling.mov").symlink_to(tmp_path / "gone.mov")
+
+    assert find_mov_files(tmp_path, recursive=False) == []
+
+
+def test_unreadable_directory_is_skipped_not_fatal(tmp_path: Path, monkeypatch) -> None:
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "a.mov").touch()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    real_iterdir = Path.iterdir
+
+    def iterdir(self: Path):
+        if self == locked:
+            raise PermissionError(13, "Permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+    videos = resolve_inputs([locked, good], recursive=False)
+
+    assert [p.name for p in videos] == ["a.mov"]

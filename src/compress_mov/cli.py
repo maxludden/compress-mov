@@ -16,7 +16,7 @@ from . import logs
 from .bins import missing_tools
 from .discovery import resolve_inputs
 from .encode import EncodeResult, encode_one, handle_interrupt
-from .formatting import clock, delta_phrase, human
+from .formatting import clock, delta_phrase, human, saved_pct
 from .notify import notify
 from .power import caffeinate
 from .terminal import relaunch_in_terminal, should_relaunch
@@ -30,6 +30,9 @@ def main(
     paths: list[Path] = typer.Argument(..., metavar="FILE|DIR", help="A .mov file or a directory containing them"),
     recursive: bool = typer.Option(
         False, "-r", "--recursive", help="Include .mov files in subdirectories of each directory"
+    ),
+    keep_larger: bool = typer.Option(
+        False, "--keep-larger", help="Keep the .mp4 even when it isn't smaller than the original"
     ),
 ) -> None:
     """Compress .mov file(s) to HEVC .mp4, saved next to the originals."""
@@ -64,23 +67,31 @@ def main(
             ]
             with Progress(*columns, console=console, transient=True) as progress:
                 for i, video in enumerate(videos, start=1):
-                    result = encode_one(i, total, video, work_dir, progress)
+                    result = encode_one(i, total, video, work_dir, progress, keep_larger=keep_larger)
                     results.append(result)
-                    if result.ok:
-                        pct = 100.0 * (result.in_bytes - result.out_bytes) / result.in_bytes
+                    if result.discarded:
+                        console.print(
+                            f"[{i}/{total}] {video.name}  = no savings ({human(result.in_bytes)} → "
+                            f"{human(result.out_bytes)}); output discarded, original kept",
+                            style="yellow",
+                        )
+                    elif result.ok:
+                        pct = saved_pct(result.in_bytes, result.out_bytes)
                         console.print(
                             f"[{i}/{total}] {video.name}  ✓ {human(result.in_bytes)} → {human(result.out_bytes)} "
                             f"({delta_phrase(pct)}) in {clock(result.elapsed)}"
                         )
                     else:
+                        reason = result.error or f"exit {result.rc}"
                         console.print(
-                            f"[{i}/{total}] {video.name}  ✗ failed (exit {result.rc}) — see {logs.LOG_FILE}",
+                            f"[{i}/{total}] {video.name}  ✗ failed ({reason}) — see {logs.LOG_FILE}",
                             style="red",
                         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    done = [r for r in results if r.ok]
+    done = [r for r in results if r.ok and not r.discarded]
+    skipped = [r for r in results if r.discarded]
     failed = [r for r in results if not r.ok]
 
     # Batch summary, only when it isn't just restating the single-file line above.
@@ -88,10 +99,12 @@ def main(
         if done:
             bytes_in = sum(r.in_bytes for r in done)
             bytes_out = sum(r.out_bytes for r in done)
-            overall = 100.0 * (bytes_in - bytes_out) / bytes_in
+            overall = saved_pct(bytes_in, bytes_out)
             summary = f"{len(done)}/{total} compressed: {human(bytes_in)} → {human(bytes_out)} ({delta_phrase(overall)})"
         else:
             summary = f"0/{total} compressed"
+        if skipped:
+            summary += f", {len(skipped)} skipped (no savings)"
         if failed:
             summary += f", {len(failed)} failed"
         console.print(summary)

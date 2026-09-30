@@ -4,9 +4,21 @@ of .mov files to encode.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from .ui import console
+
+
+def _is_wanted(path: Path, directory: Path) -> bool:
+    if path.suffix.lower() != ".mov":
+        return False
+    if any(part.startswith(".") for part in path.relative_to(directory).parts):
+        return False
+    try:
+        return path.is_file()
+    except OSError:  # e.g. permission denied while stat-ing
+        return False
 
 
 def find_mov_files(directory: Path, recursive: bool) -> list[Path]:
@@ -15,16 +27,15 @@ def find_mov_files(directory: Path, recursive: bool) -> list[Path]:
     Matching is case-insensitive (.mov/.MOV/.Mov/...). Hidden files and
     anything under a hidden directory are skipped: that covers the ``._*``
     AppleDouble sidecars macOS writes on exFAT/SMB volumes (not real
-    videos), and ``.Trashes``/``.Spotlight-V100`` and friends.
+    videos), and ``.Trashes``/``.Spotlight-V100`` and friends. A directory
+    that can't be read yields nothing (with a note) instead of aborting.
     """
-    candidates = directory.rglob("*") if recursive else directory.iterdir()
-    return sorted(
-        p
-        for p in candidates
-        if p.suffix.lower() == ".mov"
-        and not any(part.startswith(".") for part in p.relative_to(directory).parts)
-        and p.is_file()
-    )
+    try:
+        candidates = list(directory.rglob("*") if recursive else directory.iterdir())
+    except OSError as exc:
+        console.print(f"  skipping (can't read {directory.name}/): {exc.strerror or exc}")
+        return []
+    return sorted(p for p in candidates if _is_wanted(p, directory))
 
 
 def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:
@@ -40,10 +51,15 @@ def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:
     videos: list[Path] = []
     seen: set[Path] = set()
     for raw in paths:
-        if raw.is_dir():
+        try:
+            is_dir, is_file = raw.is_dir(), raw.is_file()
+        except OSError as exc:
+            console.print(f"  skipping (can't access {raw}): {exc.strerror or exc}")
+            continue
+        if is_dir:
             found = find_mov_files(raw, recursive)
             console.print(f"  {raw.name}/: {len(found)} .mov file(s)")
-        elif raw.is_file():
+        elif is_file:
             if raw.suffix.lower() == ".mov":
                 found = [raw]
             else:
@@ -54,9 +70,11 @@ def resolve_inputs(paths: list[Path], recursive: bool) -> list[Path]:
             found = []
 
         for f in found:
+            # De-duplicate on the real file, but keep the path as given so the
+            # output lands next to a symlink, not next to what it points at.
             real = f.resolve()
             if real not in seen:
                 seen.add(real)
-                videos.append(real)
+                videos.append(Path(os.path.abspath(f)))
 
     return videos
