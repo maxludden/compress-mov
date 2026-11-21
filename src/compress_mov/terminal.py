@@ -17,6 +17,7 @@ import textwrap
 from pathlib import Path
 
 from .bins import OPEN
+from .discovery import rejoin_split_paths
 
 
 def should_relaunch() -> bool:
@@ -72,7 +73,22 @@ def relaunch_in_terminal(argv: list[str], command: list[str] | None = None) -> N
     # The new terminal starts in $HOME, so relative paths must be made
     # absolute here. Finder already passes absolute paths; this covers
     # manual runs with relative ones.
-    abs_args = [a if a.startswith("-") else str(Path(a).resolve()) for a in argv]
+    # Rejoin paths split by unquoted spaces first: once each piece is made
+    # absolute on its own, `resolve_inputs` in the new window can't glue them.
+    abs_args: list[str] = []
+    run: list[Path] = []
+
+    def flush() -> None:
+        abs_args.extend(str(p.resolve()) for p in rejoin_split_paths(run, say=lambda _m: None))
+        run.clear()
+
+    for a in argv:
+        if a.startswith("-"):
+            flush()
+            abs_args.append(a)
+        else:
+            run.append(Path(a))
+    flush()
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="compress-mov.", dir=os.environ.get("TMPDIR", "/tmp")))
     launcher = tmp_dir / "compress-mov.command"

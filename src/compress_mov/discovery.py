@@ -54,31 +54,42 @@ def rejoin_split_paths(paths: list[Path], say: Say = console.print) -> list[Path
     """Repair a path with unquoted spaces that the shell split into pieces.
 
     ``compress-mov ~/Library/Mobile Documents/x.MOV`` reaches us as two
-    arguments. When an argument doesn't exist, try gluing it to the ones
-    after it with single spaces (shortest join first); if that names a real
-    path, use it in place of the pieces. Arguments that exist are never
-    touched, and anything that can't be repaired is passed through so it is
-    reported as "not found" as usual.
+    arguments. Each argument may be glued, with single spaces, to the run of
+    arguments right after it that don't exist on their own; the longest such
+    join that names a real path replaces its pieces. So:
+
+    - an argument that exists by itself is never swallowed into a join, which
+      keeps separate, valid inputs separate;
+    - the longest match wins, so an existing folder that is only a prefix of
+      the intended path (``My Clips`` vs ``My Clips/a b.mov``) isn't picked;
+    - a first piece that happens to exist (``~/My`` beside ``~/My Clips``) can
+      still start a join when the pieces after it don't exist alone.
+
+    Anything that can't be repaired is passed through unchanged, so it is
+    reported as "not found" as usual. Joins are not ``~``-expanded: the shell
+    (or the TUI) has already expanded the first piece if it should be.
     """
+    present = [_exists(p) for p in paths]
     fixed: list[Path] = []
     i = 0
     while i < len(paths):
-        if _exists(paths[i]):
-            fixed.append(paths[i])
-            i += 1
-            continue
+        best: tuple[int, Path] | None = None
         joined = str(paths[i])
         for j in range(i + 1, len(paths)):
-            joined += f" {paths[j]}"
-            candidate = Path(joined).expanduser()
-            if _exists(candidate):
-                say(f"  unquoted spaces in path, using: {candidate}")
-                fixed.append(candidate)
-                i = j + 1
+            if present[j]:  # a real input in its own right: stop here
                 break
-        else:
+            joined += f" {paths[j]}"
+            candidate = Path(joined)
+            if _exists(candidate):
+                best = (j, candidate)
+        if best is None:
             fixed.append(paths[i])
             i += 1
+        else:
+            j, candidate = best
+            say(f"  unquoted spaces in path, using: {candidate}")
+            fixed.append(candidate)
+            i = j + 1
     return fixed
 
 

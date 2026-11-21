@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -101,6 +102,23 @@ def test_relaunch_makes_relative_paths_absolute_but_keeps_flags(
 
     text = Path(calls[0][3]).read_text()
     assert f"prog -r {(tmp_path / 'clip.mov').resolve()}" in text
+
+
+def test_relaunch_rejoins_split_relative_path_before_making_it_absolute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    clip = tmp_path / "Mobile Documents" / "x.MOV"
+    clip.parent.mkdir()
+    clip.write_bytes(b"x")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(terminal.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    relaunch_in_terminal(["-r", "Mobile", "Documents/x.MOV"], command=["prog"])
+
+    text = Path(calls[0][3]).read_text()
+    assert f"prog -r {shlex.quote(str(clip.resolve()))}" in text
 
 
 def test_relaunch_honours_terminal_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
