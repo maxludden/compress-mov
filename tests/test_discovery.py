@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from compress_mov.discovery import find_mov_files, resolve_inputs
+from compress_mov.discovery import find_mov_files, rejoin_split_paths, resolve_inputs
 
 
 def test_find_mov_files_is_case_insensitive_and_non_recursive(tmp_path: Path) -> None:
@@ -203,3 +203,22 @@ def test_unreadable_directory_note_uses_the_sink(tmp_path: Path, monkeypatch) ->
 
     assert find_mov_files(tmp_path, recursive=False, say=notes.append) == []
     assert notes and "can't read" in notes[0]
+
+
+def test_resolve_inputs_rejoins_path_split_on_unquoted_spaces(tmp_path: Path) -> None:
+    folder = tmp_path / "Mobile Documents" / "my clips"
+    folder.mkdir(parents=True)
+    clip = folder / "a.MOV"
+    clip.write_bytes(b"x")
+    pieces = [Path(p) for p in str(clip).split(" ")]
+    notes: list[str] = []
+    assert resolve_inputs(pieces, recursive=False, say=notes.append) == [clip]
+    assert any("unquoted spaces" in n for n in notes)
+    assert not any("not found" in n for n in notes)
+
+
+def test_rejoin_leaves_existing_and_unfixable_paths_alone(tmp_path: Path) -> None:
+    real = tmp_path / "a.mov"
+    real.write_bytes(b"x")
+    missing = [tmp_path / "nope", tmp_path / "still nope"]
+    assert rejoin_split_paths([real, *missing], say=lambda _m: None) == [real, *missing]

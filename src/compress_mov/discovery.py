@@ -43,14 +43,55 @@ def find_mov_files(directory: Path, recursive: bool, say: Say = console.print) -
     return sorted(p for p in candidates if _is_wanted(p, directory))
 
 
+def _exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def rejoin_split_paths(paths: list[Path], say: Say = console.print) -> list[Path]:
+    """Repair a path with unquoted spaces that the shell split into pieces.
+
+    ``compress-mov ~/Library/Mobile Documents/x.MOV`` reaches us as two
+    arguments. When an argument doesn't exist, try gluing it to the ones
+    after it with single spaces (shortest join first); if that names a real
+    path, use it in place of the pieces. Arguments that exist are never
+    touched, and anything that can't be repaired is passed through so it is
+    reported as "not found" as usual.
+    """
+    fixed: list[Path] = []
+    i = 0
+    while i < len(paths):
+        if _exists(paths[i]):
+            fixed.append(paths[i])
+            i += 1
+            continue
+        joined = str(paths[i])
+        for j in range(i + 1, len(paths)):
+            joined += f" {paths[j]}"
+            candidate = Path(joined).expanduser()
+            if _exists(candidate):
+                say(f"  unquoted spaces in path, using: {candidate}")
+                fixed.append(candidate)
+                i = j + 1
+                break
+        else:
+            fixed.append(paths[i])
+            i += 1
+    return fixed
+
+
 def resolve_inputs(paths: list[Path], recursive: bool, say: Say = console.print) -> list[Path]:
     """Expand files/directories from the CLI into a flat, de-duplicated list.
 
     Each directory is expanded to the .mov files inside it. A file is used
     as-is if it has a .mov extension. Anything else is skipped with a note
     reported through `say` (the console by default). A folder plus a file
-    already inside it, passed together, is only encoded once.
+    already inside it, passed together, is only encoded once. A path split by
+    unquoted spaces is rejoined first (see `rejoin_split_paths`).
     """
+    paths = rejoin_split_paths(paths, say)
     say(f"[bold]▸[/bold] Scanning {len(paths)} input(s)…")
 
     videos: list[Path] = []
